@@ -9,7 +9,7 @@ from pymongo import MongoClient
 from datetime import datetime, timezone
 import os
 from dotenv import load_dotenv
-from typing import Union
+from typing import Union, Any
 from pydantic import BaseModel
 
 # Load environment variables from .env file
@@ -25,23 +25,41 @@ if database_url and database_name:
     _client = MongoClient(database_url)
     db = _client[database_name]
 
+
+def _coerce_to_bson_compatible(value: Any) -> Any:
+    """Recursively convert values (e.g., HttpUrl) to BSON-compatible Python types."""
+    try:
+        # Pydantic types often expose a useful string representation
+        if hasattr(value, "__get_pydantic_core_schema__"):
+            return str(value)
+    except Exception:
+        pass
+
+    if isinstance(value, dict):
+        return {k: _coerce_to_bson_compatible(v) for k, v in value.items()}
+    if isinstance(value, (list, tuple)):
+        return [ _coerce_to_bson_compatible(v) for v in value ]
+    return value
+
 # Helper functions for common database operations
 def create_document(collection_name: str, data: Union[BaseModel, dict]):
     """Insert a single document with timestamp"""
     if db is None:
         raise Exception("Database not available. Check DATABASE_URL and DATABASE_NAME environment variables.")
 
-    # Convert Pydantic model to dict if needed
+    # Convert Pydantic model to dict if needed; ensure JSON-serializable (BSON friendly)
     if isinstance(data, BaseModel):
-        data_dict = data.model_dump()
+        # mode="json" converts types like HttpUrl to str in Pydantic v2
+        data_dict = data.model_dump(mode="json")
     else:
-        data_dict = data.copy()
+        data_dict = _coerce_to_bson_compatible(data.copy())
 
     data_dict['created_at'] = datetime.now(timezone.utc)
     data_dict['updated_at'] = datetime.now(timezone.utc)
 
     result = db[collection_name].insert_one(data_dict)
     return str(result.inserted_id)
+
 
 def get_documents(collection_name: str, filter_dict: dict = None, limit: int = None):
     """Get documents from collection"""
